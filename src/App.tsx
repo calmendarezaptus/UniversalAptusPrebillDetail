@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import 'animate.css'
 import { Toaster, toast } from 'sonner'
 import {
-  AlertTriangle, BadgePercent, Check, ChevronLeft, FileText, History, Info, Languages, Lock, Plus, ReceiptText, RefreshCw, Trash2, UserCheck, X,
+  AlertTriangle, BadgePercent, Check, ChevronLeft, FileText, History, Info, Languages, Lock, Plus, ReceiptText, RefreshCw, Trash2, Undo2, UserCheck, X,
 } from 'lucide-react'
 import { Card } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
@@ -16,7 +16,7 @@ import { cn } from '@/lib/utils'
 import { LIST_URL, screenUrl } from '@/lib/api'
 import { cardCls, gradientBtnCls, inputCls, labelCls, sectionIconCls, sectionTitleCls, useTheme } from '@/lib/ui'
 import {
-  AVANZAR, avanzarEstado, cambiarLineas, contarIgnorados, editable, eliminarPrebill, ESTADO_CLS, ESTADO_LABEL, ESTADOS, formatFecha, formatMoney,
+  AVANZAR, avanzarEstado, cambiarLineas, contarIgnorados, deshacerFactura, editable, editableEnBooks, eliminarPrebill, facturar, ESTADO_CLS, ESTADO_LABEL, ESTADOS, formatFecha, formatMoney,
   getDisponible, getEdicion, getMovimientos, getPrebill, getVistaFactura, idsPorTipo, KIND_PLURAL, KINDS, lineasDe, parseAjuste,
   setDescuentoAjuste, setIdioma, setTipoCambio,
   type Edicion, type Linea, type Movimiento, type PrebillDetalle, type VistaFactura,
@@ -69,7 +69,8 @@ function App() {
   useEffect(() => { void load() }, [organizationId, prebillId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const lineas = useMemo(() => prebill ? lineasDe(prebill) : [], [prebill])
-  const puedeEditar = !!prebill && editable(prebill.status)
+  const enBooks = !!prebill && editableEnBooks(prebill.status, edicion)
+  const puedeEditar = !!prebill && (editable(prebill.status) || enBooks)
   const enBorrador = prebill?.status === 'borrador'
 
   const [saving, setSaving] = useState(false)
@@ -82,10 +83,10 @@ function App() {
 
   // ── Líneas ─────────────────────────────────────────────────────────────
   const quitar = (l: Linea) => {
-    if (!window.confirm(`¿Quitar de la Prebill este ${l.kind === 'cargo' ? 'honorario fijo' : l.kind} (${formatMoney(l.monto, l.moneda)})?\n\nVuelve a quedar liberado y disponible para otra Prebill.`)) return
+    if (!window.confirm(`¿Quitar de la Prebill este ${l.kind === 'cargo' ? 'honorario fijo' : l.kind} (${formatMoney(l.monto, l.moneda)})?\n\nVuelve a quedar liberado y disponible para otra Prebill.${enBooks ? `\n\nTambién se quita de la factura ${prebill?.invoice_number} en Books.` : ''}`)) return
     void run(async () => {
-      await cambiarLineas(organizationId!, prebill!.id, idsPorTipo([l], 'quitar_'))
-      toast.success('Línea quitada.'); await load()
+      const r = await cambiarLineas(organizationId!, prebill!.id, idsPorTipo([l], 'quitar_'))
+      avisoFactura(r.factura_actualizada, 'Línea quitada.'); await load()
     }, 'No se quitó la línea')
   }
   const [agregando, setAgregando] = useState(false)
@@ -100,12 +101,20 @@ function App() {
   const agregar = () => run(async () => {
     const elegidas = disp.rows.filter(r => marcadas.has(r.key))
     if (!elegidas.length) return
+    if (enBooks && !window.confirm(`¿Agregar ${elegidas.length} línea(s)?\n\nTambién se agregan a la factura ${prebill?.invoice_number} en Books.`)) return
     const r = await cambiarLineas(organizationId!, prebill!.id, idsPorTipo(elegidas, 'agregar_'))
     const ignorados = contarIgnorados(r.ids_ignorados)
     if (ignorados) toast.warning(`${elegidas.length - ignorados} agregada(s); ${ignorados} ya no estaban disponibles.`)
-    else toast.success(`${elegidas.length} línea(s) agregada(s).`)
+    else avisoFactura(r.factura_actualizada, `${elegidas.length} línea(s) agregada(s).`)
     setAgregando(false); await load()
   }, 'No se agregaron las líneas')
+
+  // Resultado de actualizar la factura en Books al cambiar líneas.
+  const avisoFactura = (f: { numero: string; cuadra: boolean; subtotal_books: number; subtotal_esperado: number } | undefined, ok: string) => {
+    if (!f) { toast.success(ok); return }
+    if (f.cuadra) toast.success(`${ok} Factura ${f.numero} actualizada en Books.`)
+    else toast.warning(`${ok} La factura ${f.numero} en Books suma ${formatMoney(f.subtotal_books)} y se esperaba ${formatMoney(f.subtotal_esperado)}: revísala.`)
+  }
 
   // ── Descuento y ajuste (solo borrador) ─────────────────────────────────
   const [desc, setDesc] = useState<{ tipo: Tipo; valor: string }>({ tipo: '', valor: '' })
@@ -125,6 +134,7 @@ function App() {
 
   // ── Idioma y tipo de cambio ────────────────────────────────────────────
   const cambiarIdioma = (v: string) => run(async () => {
+    if (enBooks && !window.confirm(`¿Cambiar el idioma?\n\nLa factura ${prebill?.invoice_number} se rearma en Books con los conceptos del otro idioma.`)) return
     await setIdioma(organizationId!, prebill!.id, v === 'cliente' ? '' : v as 'es' | 'en')
     toast.success('Idioma de la factura actualizado.'); await load()
   }, 'No se cambió el idioma')
@@ -148,6 +158,27 @@ function App() {
       toast.success(`Prebill #${prebill.id}: ${ESTADO_LABEL[siguiente.a]}.`); await load()
     }, 'No se cambió el estado')
   }
+  // ── Facturar y deshacer (ESCRIBEN EN BOOKS) ───────────────────────────
+  const bloqueos = vista.data?.bloqueantes || []
+  const puedeFacturar = prebill?.status === 'autorizada' && !!vista.data && !bloqueos.length && lineas.length > 0
+  const facturarPrebill = () => {
+    if (!prebill || !puedeFacturar) return
+    if (!window.confirm(`¿Facturar la Prebill #${prebill.id}?\n\nSe crea la factura en Zoho Books como BORRADOR para ${prebill.cliente_nombre}, por ${formatMoney(vista.data!.total_antes_de_impuestos, prebill.moneda)} antes de impuestos, y sus tiempos quedan facturados en Books.\n\nMientras siga en borrador se puede deshacer desde aquí.`)) return
+    void run(async () => {
+      const r = await facturar(organizationId!, prebill.id)
+      toast.success(r.invoice_number ? `Factura ${r.invoice_number} creada en Books (borrador).` : 'Prebill facturada.')
+      await load()
+    }, 'No se facturó')
+  }
+  const deshacer = () => {
+    if (!prebill || !window.confirm(`¿Deshacer la factura ${prebill.invoice_number} de la Prebill #${prebill.id}?\n\nSe BORRA la factura en Zoho Books (sigue en borrador) y la Prebill regresa a Autorizada con sus líneas.`)) return
+    void run(async () => {
+      await deshacerFactura(organizationId!, prebill.id)
+      toast.success(`Factura ${prebill.invoice_number} borrada de Books; la Prebill #${prebill.id} está Autorizada.`)
+      await load()
+    }, 'No se deshizo la factura')
+  }
+
   const eliminar = () => {
     if (!prebill || !window.confirm(`¿Eliminar la Prebill #${prebill.id}?\n\nSus ${lineas.length} línea(s) vuelven a quedar liberadas para otra Prebill.`)) return
     void run(async () => {
@@ -191,6 +222,15 @@ function App() {
           <div className="flex flex-wrap gap-3 mt-4 lg:mt-0 w-full lg:w-auto">
             <Button variant="outline" onClick={goBack} className="flex-1 lg:flex-none h-11 px-5 rounded-lg border-slate-200 text-slate-700 font-medium gap-1.5"><ChevronLeft className="w-4 h-4" />Prebills</Button>
             {enBorrador && <Button variant="outline" onClick={eliminar} disabled={saving} className="flex-1 lg:flex-none h-11 px-5 rounded-lg border-red-200 text-red-700 hover:bg-red-50 font-medium gap-1.5"><Trash2 className="w-4 h-4" />Eliminar</Button>}
+            {enBooks && (
+              <Button variant="outline" onClick={deshacer} disabled={saving} className="flex-1 lg:flex-none h-11 px-5 rounded-lg border-amber-300 text-amber-800 hover:bg-amber-50 font-medium gap-1.5"><Undo2 className="w-4 h-4" />Deshacer factura</Button>
+            )}
+            {prebill?.status === 'autorizada' && (
+              <Button onClick={facturarPrebill} disabled={saving || !puedeFacturar} title={bloqueos.length ? 'La vista previa tiene bloqueos' : undefined}
+                className={cn('flex-1 lg:flex-none h-11 px-6 rounded-lg shadow-sm font-medium gap-2 border-0 disabled:opacity-50', gradientBtnCls)}>
+                <ReceiptText className="w-4 h-4" />Facturar en Books
+              </Button>
+            )}
             {siguiente && (
               <Button onClick={avanzar} disabled={saving || !lineas.length} className={cn('flex-1 lg:flex-none h-11 px-6 rounded-lg shadow-sm font-medium gap-2 border-0 disabled:opacity-50', gradientBtnCls)}>
                 <Check className="w-4 h-4" />{siguiente.accion}
@@ -224,16 +264,22 @@ function App() {
 
           {prebill && t && (
             <div inert={saving} className="space-y-4">
+              {enBooks && (
+                <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>Facturada: la factura {prebill.invoice_number} sigue en <b>borrador</b> en Books. Quitar o agregar líneas o cambiar el idioma <b>también actualiza la factura en Books</b>. Mientras siga en borrador puedes deshacerla.</span>
+                </div>
+              )}
               {!puedeEditar && (
                 <div className="rounded-lg border border-violet-200 bg-violet-50 p-3 text-sm text-violet-900 flex items-start gap-2">
                   <Lock className="w-4 h-4 shrink-0 mt-0.5" />
-                  <span>Prebill {ESTADO_LABEL[prebill.status]?.toLowerCase()}{prebill.invoice_number ? ` (factura ${prebill.invoice_number})` : ''}: aquí solo se consulta. {edicion?.motivo || 'Cualquier cambio también cambiaría la factura en Books; hazlo desde Aptus.'}</span>
+                  <span>Prebill {ESTADO_LABEL[prebill.status]?.toLowerCase()}{prebill.invoice_number ? ` (factura ${prebill.invoice_number})` : ''}: solo se consulta. {edicion?.motivo || 'La factura ya no se puede modificar.'}</span>
                 </div>
               )}
               {prebill.status === 'autorizada' && (
                 <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900 flex items-start gap-2">
                   <Info className="w-4 h-4 shrink-0 mt-0.5" />
-                  <span>Autorizada: lista para facturar desde Aptus. Todavía se pueden cambiar líneas, idioma y tipo de cambio.</span>
+                  <span>{bloqueos.length ? 'Autorizada, pero la vista previa tiene bloqueos: resuélvelos para poder facturar.' : 'Autorizada: lista para facturar. "Facturar en Books" crea la factura como borrador.'} Todavía se pueden cambiar líneas, idioma y tipo de cambio.</span>
                 </div>
               )}
 
@@ -378,7 +424,7 @@ function App() {
               <div className={cardCls}>
                 <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
                   <div className="flex items-center gap-2"><ReceiptText className={sectionIconCls} /><span className={sectionTitleCls}>Vista previa de la factura</span></div>
-                  {vista.data && <span className="text-[11px] text-slate-500">Formato {vista.data.modo_factura} · {vista.data.idioma === 'en' ? 'inglés' : 'español'}{vista.data.tipo_cambio ? ` · TC ${vista.data.tipo_cambio}` : ''} · no se crea nada en Books</span>}
+                  {vista.data && <span className="text-[11px] text-slate-500">Formato {vista.data.modo_factura} · {vista.data.idioma === 'en' ? 'inglés' : 'español'}{vista.data.tipo_cambio ? ` · TC ${vista.data.tipo_cambio}` : ''} · así se manda a Books al facturar</span>}
                 </div>
                 {vista.error ? <p role="alert" className="text-xs text-red-700">{vista.error}</p> : !vista.data ? <p className="text-xs text-slate-500">Cargando…</p> : (
                   <>
@@ -427,7 +473,7 @@ function App() {
                 </div>
               )}
 
-              <p className="flex items-start gap-2 text-[11px] text-slate-500 px-1"><Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />Todo se guarda en Aptus. Facturar (crear la factura en Books) y deshacer factura se hacen desde Aptus.</p>
+              <p className="flex items-start gap-2 text-[11px] text-slate-500 px-1"><Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />Facturar crea la factura en Books como borrador; deshacer la borra mientras siga en borrador. Enviarla, cobrarla o anularla se hace en Books.</p>
             </div>
           )}
         </div>
