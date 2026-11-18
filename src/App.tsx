@@ -22,6 +22,7 @@ import {
   setDescuentoAjuste, setIdioma, setTipoCambio,
   type Edicion, type Linea, type Movimiento, type PrebillDetalle, type VistaFactura,
 } from '@/lib/prebills'
+import { MenuButton } from '@/components/MenuButton'
 
 type Modal = { isOpen: boolean; type: StatusModalType; title: string; message: string }
 type Tipo = '' | 'monto' | 'porcentaje'
@@ -217,6 +218,7 @@ function App() {
                 <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Prebill {prebillId ? `#${prebillId}` : ''}</h1>
                 {prebill && <span className={cn('text-xs font-semibold border rounded px-2 py-0.5', ESTADO_CLS[prebill.status])}>{ESTADO_LABEL[prebill.status] || prebill.status}</span>}
                 <ThemeMenu theme={theme} setTheme={setTheme} />
+                <MenuButton />
               </div>
               <p className="text-slate-500 text-sm mt-0.5 truncate">{prebill ? `${prebill.cliente_nombre} · ${prebill.moneda}` : 'Cargando…'}</p>
             </div>
