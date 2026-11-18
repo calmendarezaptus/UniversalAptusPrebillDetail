@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import 'animate.css'
 import { Toaster, toast } from 'sonner'
 import {
-  AlertTriangle, BadgePercent, Check, ChevronLeft, FileText, History, Info, Languages, Lock, Plus, ReceiptText, RefreshCw, Trash2, Undo2, UserCheck, X,
+  AlertTriangle, BadgePercent, Check, ChevronLeft, FileText, History, Info, Languages, Lock, Plus, Printer, ReceiptText, RefreshCw, Trash2, Undo2, UserCheck, X,
 } from 'lucide-react'
 import { Card } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
@@ -12,6 +12,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { StatusModal, type StatusModalType } from '@/components/StatusModal'
 import { ThemeMenu } from '@/components/ThemeMenu'
+import { ImprimirDialog } from '@/components/ImprimirDialog'
 import { cn } from '@/lib/utils'
 import { LIST_URL, screenUrl } from '@/lib/api'
 import { cardCls, gradientBtnCls, inputCls, labelCls, sectionIconCls, sectionTitleCls, useTheme } from '@/lib/ui'
@@ -34,6 +35,7 @@ function App() {
   const organizationId = params.get('organization_id')
   const prebillId = params.get('prebill_id')
   const [statusModal, setStatusModal] = useState<Modal>({ isOpen: false, type: 'info', title: '', message: '' })
+  const [imprimir, setImprimir] = useState(false)
   const showError = (title: string, error: unknown) => setStatusModal({ isOpen: true, type: 'error', title: uncertainOf(error) ? 'Resultado por verificar' : title, message: error instanceof Error ? error.message : 'Error.' })
 
   useEffect(() => {
@@ -221,6 +223,7 @@ function App() {
           </div>
           <div className="flex flex-wrap gap-3 mt-4 lg:mt-0 w-full lg:w-auto">
             <Button variant="outline" onClick={goBack} className="flex-1 lg:flex-none h-11 px-5 rounded-lg border-slate-200 text-slate-700 font-medium gap-1.5"><ChevronLeft className="w-4 h-4" />Prebills</Button>
+            {prebill && <Button variant="outline" onClick={() => setImprimir(true)} className="flex-1 lg:flex-none h-11 px-5 rounded-lg border-slate-200 text-slate-700 font-medium gap-1.5"><Printer className="w-4 h-4" />Imprimir</Button>}
             {enBorrador && <Button variant="outline" onClick={eliminar} disabled={saving} className="flex-1 lg:flex-none h-11 px-5 rounded-lg border-red-200 text-red-700 hover:bg-red-50 font-medium gap-1.5"><Trash2 className="w-4 h-4" />Eliminar</Button>}
             {enBooks && (
               <Button variant="outline" onClick={deshacer} disabled={saving} className="flex-1 lg:flex-none h-11 px-5 rounded-lg border-amber-300 text-amber-800 hover:bg-amber-50 font-medium gap-1.5"><Undo2 className="w-4 h-4" />Deshacer factura</Button>
@@ -479,6 +482,7 @@ function App() {
         </div>
       </Card>
 
+      {prebill && organizationId && <ImprimirDialog open={imprimir} onOpenChange={setImprimir} org={organizationId} prebillId={prebill.id} />}
       <StatusModal
         isOpen={statusModal.isOpen}
         onClose={statusModal.type === 'error' && (!organizationId || !prebillId) ? undefined : () => setStatusModal(prev => ({ ...prev, isOpen: false }))}
